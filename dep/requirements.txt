@@ -1,0 +1,6 @@
+aiohttp==3.10.5
+beautifulsoup4==4.13.4
+playwright==1.52.0
+python-dotenv==1.1.0
+schedule==1.2.2
+SQLAlchemy==2.0.41

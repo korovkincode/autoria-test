@@ -1,0 +1,32 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_DB: carparser
+      POSTGRES_USER: caruser
+      POSTGRES_PASSWORD: carpassword
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    depends_on:
+      - db
+    environment:
+      TARGET_PAGE: "https://auto.ria.com/car/used"
+      PAGE_LIMIT: 1
+      START_TIME: "12:00"
+      DATABASE_URL: postgresql://caruser:carpassword@db:5432/carparser
+      PGUSER: caruser
+      PGPASSWORD: carpassword
+      PGNAME: carparser
+    volumes:
+      - ./dumps:/app/dumps
+
+volumes:
+  pgdata:

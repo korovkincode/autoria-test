@@ -28,6 +28,7 @@ class Parser:
 
 
     async def get(self, url: str):
+        # Async HTTP GET request with aiohttp, with error handling
         try:
             async with aiohttp.ClientSession(headers=self.headers) as session:
                 async with session.get(url) as response:
@@ -40,6 +41,7 @@ class Parser:
 
     @staticmethod
     def check_block(block, name: str, recursive=True):
+        # Extract text or log absence of a block
         if block is None:
             logging.info(f"No {name} is listed.")
         else:
@@ -52,6 +54,7 @@ class Parser:
 
     @staticmethod
     def prepare_data(data: dict):
+        # Clean string fields and format phone number if present
         for key in data:
             if isinstance(data[key], str):
                 data[key] = data[key].strip()
@@ -61,29 +64,35 @@ class Parser:
 
 
     async def start(self):
-        if self.start_time != utils.converted_time() and 0:
+        if self.start_time != utils.converted_time("hours-minutes"):
             raise utils.StartTimeException("Wrong start time.")
 
         self.items_queue = []
+
         Database.setup()
         self.db_driver = Database.get_driver()
 
+        # Prepare a set of URLs already in DB to skip duplicates
         self.items_skip = {}
         cars_data = self.db_driver.query(Cars).all()
         for car in cars_data:
             self.items_skip[car.url] = 1
 
+        # Fetch all catalog pages concurrently
         catalog_tasks = [self.parse_catalog(page_num) for page_num in range(1, self.page_limit + 1)]
         await asyncio.gather(*catalog_tasks)
         logging.info(f"Found {len(self.items_queue)} items.")
 
         '''
+
         Potential approach for async items data fetching (takes too much memory):
 
         item_tasks = [self.parse_item(item_url) for item_url in self.items_queue]
         await asyncio.gather(*item_tasks)
+
         '''
         
+        # Sequentially parse each item
         for item_url in self.items_queue:
             await self.parse_item(item_url)
 
@@ -114,9 +123,14 @@ class Parser:
             page = await context.new_page()
 
             await page.goto(item_url)
-            await page.click("button.fc-cta-consent")
-            await page.click("a.phone_show_link")
-            await page.wait_for_timeout(1000)
+            try:
+                # Accept cookie consent and reveal phone number, handle timeouts gracefully
+                await page.click("button.fc-cta-consent")
+                await page.click("a.phone_show_link", timeout=10000)
+                await page.wait_for_timeout(1000)
+            except Exception as e:
+                logging.error("Error:", e)
+                return
 
             item_html = await page.content()
             await browser.close()
@@ -124,27 +138,36 @@ class Parser:
         item_soup = BS(item_html, "html.parser")
         item_data = {}
 
-        item_data["url"] = item_url
-        item_data["title"] = item_soup.find("h1", {"class": "head"}).text
-        item_data["price_usd"] = int(item_soup.find("div", {"class": "price_value"}).find("strong").text.replace(" ", "")[:-1]) #Remove last symbol of currency
-        item_data["odometer"] = int(item_soup.find("div", {"class": "base-information"}).find("span").text) * 1000
-        item_data["username"] = self.check_block(item_soup.find(["div", "h4"], {"class": "seller_info_name"}), "username")
-        item_data["phone_number"] = item_soup.find("span", {"class": "phone"}).text
-        item_data["image_url"] = item_soup.find("div", {"id": "photosBlock"}).find("img").get("src")
-        item_data["images_count"] = int(item_soup.find("div", {"class": "count-photo"}).find("span", {"class": "mhide"}).text.replace("из ", ""))
-        item_data["car_number"] = self.check_block(item_soup.find("span", {"class": "state-num"}), "car number", False)
-        item_data["car_vin"] = self.check_block(item_soup.find("span", {"class": ["label-vin", "vin-code"]}), "car VIN")
-        item_data["datetime_found"] = utils.converted_time(full=True)
-        
-        item_data = self.prepare_data(item_data)
-        car = Cars(**item_data)
-        self.db_driver.add(car)
-        self.db_driver.commit()
+        if item_soup.find("div", {"class": "notice_head"}):
+            logging.info(f"Item {item_url} is not active, skipping.")
+            return
+
+        try:
+            # Extract data, carefully handle missing fields if necessary
+            item_data["url"] = item_url
+            item_data["title"] = item_soup.find("h1", {"class": "head"}).text
+            item_data["price_usd"] = int(item_soup.find("div", {"class": "price_value"}).find("strong").text.replace(" ", "")[:-1]) #Remove last symbol of currency
+            item_data["odometer"] = int(item_soup.find("div", {"class": "base-information"}).find("span").text) * 1000
+            item_data["username"] = self.check_block(item_soup.find(["div", "h4"], {"class": "seller_info_name"}), "username")
+            item_data["phone_number"] = item_soup.find("span", {"class": "phone"}).text
+            item_data["image_url"] = item_soup.find("div", {"id": "photosBlock"}).find("img").get("src")
+            item_data["images_count"] = int(item_soup.find("div", {"class": "count-photo"}).find("span", {"class": "mhide"}).text.replace("из ", ""))
+            item_data["car_number"] = self.check_block(item_soup.find("span", {"class": "state-num"}), "car number", False)
+            item_data["car_vin"] = self.check_block(item_soup.find("span", {"class": ["label-vin", "vin-code"]}), "car VIN")
+            item_data["datetime_found"] = utils.converted_time("full")
+            
+            item_data = self.prepare_data(item_data)
+            
+            # Create ORM object and commit to DB
+            car = Cars(**item_data)
+            self.db_driver.add(car)
+            self.db_driver.commit()
+        except Exception as e:
+            logging.error("Error:", e)
 
 
-if __name__ == "__main__":
-    worker = Parser(
-        HEADERS, CONFIG["TARGET_PAGE"],
-        int(CONFIG["PAGE_LIMIT"]), CONFIG["START_TIME"]
-    )
-    asyncio.run(worker.start())
+worker = Parser(
+    HEADERS, CONFIG["TARGET_PAGE"],
+    int(CONFIG["PAGE_LIMIT"]), CONFIG["START_TIME"]
+)
+asyncio.run(worker.start())
