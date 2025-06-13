@@ -1,5 +1,6 @@
 from datetime import datetime
 
+
 def converted_time(full: bool = False) -> str:
     now = datetime.now()
     if full:
@@ -13,6 +14,7 @@ def converted_phone(phone_number: str) -> int:
         phone_number = phone_number.replace(symbol, "")
     phone_number = int("38" + phone_number)
     return phone_number
+
 
 class StartTimeException(Exception):
     """Current time differs with .env start time"""

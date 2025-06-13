@@ -5,6 +5,8 @@ import aiohttp
 from bs4 import BeautifulSoup as BS
 import asyncio
 from playwright.async_api import async_playwright
+from db.database import Database
+from db.models import Cars
 
 
 logging.basicConfig(level=logging.INFO)
@@ -15,13 +17,14 @@ CONFIG = dotenv_values(".env")
 
 
 class Parser:    
-    def __init__(self, headers: dict, target: str, page_limit: int, page_items: int, start_time: str):
+    def __init__(self, headers: dict, target: str, page_limit: int, start_time: str):
         self.headers = headers
         self.target = target
         self.page_limit = page_limit
-        self.page_items = page_items
         self.start_time = start_time
         self.items_queue = None
+        self.db_driver = None
+        self.items_skip = None
 
 
     async def get(self, url: str):
@@ -62,6 +65,13 @@ class Parser:
             raise utils.StartTimeException("Wrong start time.")
 
         self.items_queue = []
+        Database.setup()
+        self.db_driver = Database.get_driver()
+
+        self.items_skip = {}
+        cars_data = self.db_driver.query(Cars).all()
+        for car in cars_data:
+            self.items_skip[car.url] = 1
 
         catalog_tasks = [self.parse_catalog(page_num) for page_num in range(1, self.page_limit + 1)]
         await asyncio.gather(*catalog_tasks)
@@ -90,7 +100,8 @@ class Parser:
         
         for item_div in items_div.find_all("div", {"class": "content-bar"}):
             item_url = item_div.find("a", {"class": "m-link-ticket"}).get("href")
-            self.items_queue.append(item_url)        
+            if item_url not in self.items_skip:
+                self.items_queue.append(item_url)     
 
 
     async def parse_item(self, item_url: str):
@@ -122,16 +133,18 @@ class Parser:
         item_data["image_url"] = item_soup.find("div", {"id": "photosBlock"}).find("img").get("src")
         item_data["images_count"] = int(item_soup.find("div", {"class": "count-photo"}).find("span", {"class": "mhide"}).text.replace("из ", ""))
         item_data["car_number"] = self.check_block(item_soup.find("span", {"class": "state-num"}), "car number", False)
-        item_data["car_vin"] = self.check_block(item_soup.find("span", {"class": "label-vin"}), "car VIN")
+        item_data["car_vin"] = self.check_block(item_soup.find("span", {"class": ["label-vin", "vin-code"]}), "car VIN")
         item_data["datetime_found"] = utils.converted_time(full=True)
         
         item_data = self.prepare_data(item_data)
-        print(item_data)
+        car = Cars(**item_data)
+        self.db_driver.add(car)
+        self.db_driver.commit()
 
 
 if __name__ == "__main__":
     worker = Parser(
-        HEADERS, CONFIG["TARGET_PAGE"], int(CONFIG["PAGE_LIMIT"]),
-        int(CONFIG["PAGE_ITEMS"]), CONFIG["START_TIME"]
+        HEADERS, CONFIG["TARGET_PAGE"],
+        int(CONFIG["PAGE_LIMIT"]), CONFIG["START_TIME"]
     )
     asyncio.run(worker.start())
