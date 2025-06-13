@@ -1,0 +1,124 @@
+from dotenv import dotenv_values
+import utils
+import logging
+import aiohttp
+from bs4 import BeautifulSoup as BS
+import asyncio
+from playwright.async_api import async_playwright
+
+
+logging.basicConfig(level=logging.INFO)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+}
+CONFIG = dotenv_values(".env")
+
+
+class Parser:    
+    def __init__(self, headers: dict, target: str, page_limit: int, page_items: int, start_time: str):
+        self.headers = headers
+        self.target = target
+        self.page_limit = page_limit
+        self.page_items = page_items
+        self.start_time = start_time
+        self.items_queue = None
+
+
+    async def get(self, url: str):
+        try:
+            async with aiohttp.ClientSession(headers=self.headers) as session:
+                async with session.get(url) as response:
+                    response.raise_for_status()
+                    return await response.text()
+        except aiohttp.ClientError as err:
+            logging.error(f"An error occurred: {err}")
+            raise RuntimeError(f"Request failed: {err}") from err
+
+
+    @staticmethod
+    def check_block(block, name: str, recursive=True):
+        if block is None:
+            logging.info(f"No {name} is listed.")
+        else:
+            if not recursive:
+                block = block.find(string=True, recursive=False)
+            else:
+                block = block.text
+        return block
+
+
+    async def start(self):
+        if self.start_time != utils.converted_time() and 0:
+            raise utils.StartTimeException("Wrong start time.")
+
+        self.items_queue = []
+
+        catalog_tasks = [self.parse_catalog(page_num) for page_num in range(1, self.page_limit + 1)]
+        await asyncio.gather(*catalog_tasks)
+        logging.info(f"Found {len(self.items_queue)} items.")
+
+        '''
+        Potential approach for async items data fetching (takes too much memory):
+
+        item_tasks = [self.parse_item(item_url) for item_url in self.items_queue]
+        await asyncio.gather(*item_tasks)
+        '''
+        
+        for item_url in self.items_queue:
+            await self.parse_item(item_url)
+
+
+    async def parse_catalog(self, page_num: int):
+        logging.info(f"Parsing page #{page_num} of {self.target}.")
+        catalog_url = self.target + f"?page={page_num}"
+        catalog_html = await self.get(catalog_url)
+        catalog_soup = BS(catalog_html, "html.parser")
+
+        items_div = catalog_soup.find("div", {"id": "searchResults"})
+        if items_div is None:
+            raise utils.ParsingException("Items div is not located.")
+        
+        for item_div in items_div.find_all("div", {"class": "content-bar"}):
+            item_url = item_div.find("a", {"class": "m-link-ticket"}).get("href")
+            self.items_queue.append(item_url)        
+
+
+    async def parse_item(self, item_url: str):
+        logging.info(f"Parsing item {item_url}.")
+        item_html = None
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context()
+            page = await context.new_page()
+
+            await page.goto(item_url)
+            await page.click("button.fc-cta-consent")
+            await page.click("a.phone_show_link")
+            await page.wait_for_timeout(1000)
+
+            item_html = await page.content()
+            await browser.close()
+        
+        item_soup = BS(item_html, "html.parser")
+        item_data = {}
+
+        item_data["url"] = item_url
+        item_data["title"] = item_soup.find("h1", {"class": "head"}).text
+        item_data["price_usd"] = int(item_soup.find("div", {"class": "price_value"}).find("strong").text.replace(" ", "")[:-1]) #Remove last symbol of currency
+        item_data["odometer"] = int(item_soup.find("div", {"class": "base-information"}).find("span").text) * 1000
+        item_data["username"] = self.check_block(item_soup.find(["div", "h4"], {"class": "seller_info_name"}), "username")
+        item_data["phone_number"] = item_soup.find("span", {"class": "phone"}).text
+        item_data["image_url"] = item_soup.find("div", {"id": "photosBlock"}).find("img").get("src")
+        item_data["images_count"] = int(item_soup.find("div", {"class": "count-photo"}).find("span", {"class": "mhide"}).text.replace("из ", ""))
+        item_data["car_number"] = self.check_block(item_soup.find("span", {"class": "state-num"}), "car number", False)
+        item_data["car_vin"] = self.check_block(item_soup.find("span", {"class": "label-vin"}), "car VIN")
+        item_data["datetime_found"] = utils.converted_time(full=True)
+
+
+if __name__ == "__main__":
+    worker = Parser(
+        HEADERS, CONFIG["TARGET_PAGE"], int(CONFIG["PAGE_LIMIT"]),
+        int(CONFIG["PAGE_ITEMS"]), CONFIG["START_TIME"]
+    )
+    asyncio.run(worker.start())
