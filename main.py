@@ -47,6 +47,16 @@ class Parser:
         return block
 
 
+    @staticmethod
+    def prepare_data(data: dict):
+        for key in data:
+            if isinstance(data[key], str):
+                data[key] = data[key].strip()
+            if key == "phone_number" and data[key]:
+                data[key] = utils.converted_phone(data[key])
+        return data
+
+
     async def start(self):
         if self.start_time != utils.converted_time() and 0:
             raise utils.StartTimeException("Wrong start time.")
@@ -114,6 +124,9 @@ class Parser:
         item_data["car_number"] = self.check_block(item_soup.find("span", {"class": "state-num"}), "car number", False)
         item_data["car_vin"] = self.check_block(item_soup.find("span", {"class": "label-vin"}), "car VIN")
         item_data["datetime_found"] = utils.converted_time(full=True)
+        
+        item_data = self.prepare_data(item_data)
+        print(item_data)
 
 
 if __name__ == "__main__":
